@@ -139,6 +139,13 @@ var (
 		Args:  cobra.RangeArgs(1, 2),
 		Run:   runRead,
 	}
+
+	cmdPeek = &cobra.Command{
+		Use:   "peek <type>",
+		Short: "show objects that point to and are pointed from this type of object",
+		Args:  cobra.ExactArgs(1),
+		Run:   runPeek,
+	}
 )
 
 type config struct {
@@ -175,7 +182,9 @@ func init() {
 		cmdObjgraph,
 		cmdReachable,
 		cmdHTML,
-		cmdRead)
+		cmdRead,
+		cmdPeek,
+	)
 
 	// customize the usage template - viewcore's command structure
 	// is not typical of cobra-based command line tool.
@@ -799,6 +808,52 @@ func runRead(cmd *cobra.Command, args []string) {
 		fmt.Printf(" %02x", x)
 	}
 	fmt.Println()
+}
+
+func runPeek(cmd *cobra.Command, args []string) {
+	_, c, err := readCore()
+	if err != nil {
+		exitf("%v\n", err)
+	}
+	typName := args[0]
+
+	inH := typeHistogram{
+		c: c,
+		m: make(map[string]*bucket),
+	}
+	h := typeHistogram{
+		c: c,
+		m: make(map[string]*bucket),
+	}
+	outH := typeHistogram{
+		c: c,
+		m: make(map[string]*bucket),
+	}
+	c.ForEachObject(func(x gocore.Object) bool {
+		typ := typeName(c, x)
+		if typ == typName {
+			size := c.Size(x)
+			h.add(x, size)
+			c.ForEachReversePtr(x, func(y gocore.Object, r *gocore.Root, i, j int64) bool {
+				if r == nil {
+					inH.add(y, size)
+				}
+				return true
+			})
+			c.ForEachPtr(x, func(i int64, y gocore.Object, j int64) bool {
+				outH.add(y, c.Size(y))
+				return true
+			})
+		}
+		return true
+	})
+	inH.sort()
+	inH.report(0, os.Stdout)
+	h.sort()
+	h.report(0, os.Stdout)
+	outH.sort()
+	outH.report(0, os.Stdout)
+
 }
 
 // typeName returns a string representing the type of this object.
