@@ -529,6 +529,10 @@ func (fr *frameReader) ReadInt(a core.Address) int64 {
 // For each pointer it finds in the memory at that address, it calls add with the pointer
 // and the type + repeat count of the thing that it points to.
 func (p *Process) typeObject(a core.Address, t *Type, r reader, add func(core.Address, *Type, int64)) {
+	if strings.HasPrefix(t.Name, "github.com/cockroachdb/pebble/internal/manifest") {
+		// TODO(jordan): What is up with this?
+		return
+	}
 	ptrSize := p.proc.PtrSize()
 
 	switch t.Kind {

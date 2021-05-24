@@ -505,7 +505,7 @@ func (p *Process) openMappedFile(fname string, m *Mapping) (*os.File, error) {
 
 	backing := &file{}
 
-	isMainExe := m.perm&Exec != 0 && p.mainExecName == "" // first executable region
+	isMainExe := p.mainExecName == "" // first executable region
 	if p.entryPoint != 0 && m.Min() <= p.entryPoint && p.entryPoint < m.Max() {
 		// Or if we have the entry point info and it falls into this mappint, this is the region
 		// the main executable is mapped.
