@@ -26,6 +26,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/chzyer/readline"
+	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
 	"golang.org/x/debug/internal/core"
 	"golang.org/x/debug/internal/gocore"
@@ -450,8 +451,68 @@ func runGoroutines(cmd *cobra.Command, args []string) {
 	}
 }
 
+type typeHistogram struct {
+	buckets []*bucket
+	m       map[string]*bucket
+	c       *gocore.Process
+}
+
+func (h *typeHistogram) add(x gocore.Object, size int64) {
+	name := typeName(h.c, x)
+	b := h.m[name]
+	if b == nil {
+		b = &bucket{name: name, size: size}
+		h.buckets = append(h.buckets, b)
+		h.m[name] = b
+	}
+	b.count++
+}
+
+func (h *typeHistogram) sort() {
+	sort.Slice(h.buckets, func(i, j int) bool {
+		return h.buckets[i].size*h.buckets[i].count > h.buckets[j].size*h.buckets[j].count
+	})
+}
+
+func (h *typeHistogram) report(topN int, w io.Writer) {
+	// report only top N if requested
+	var totalSize int64
+	for i := range h.buckets {
+		totalSize += h.buckets[i].size * h.buckets[i].count
+	}
+	if topN > 0 && len(h.buckets) > topN {
+		h.buckets = h.buckets[:topN]
+	}
+	t := tabwriter.NewWriter(w, 0, 0, 1, ' ', tabwriter.AlignRight)
+	fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\t %s\n", "count", "size", "bytes", "live%", "sum%", "type")
+	var totalPct float64
+	for _, e := range h.buckets {
+		size := e.count * e.size
+		pct := float64(size) / float64(totalSize) * 100
+		totalPct += pct
+		fmt.Fprintf(t, "%d\t%s\t%s\t%.2f\t%.2f\t %s\n", e.count,
+			humanize.Bytes(uint64(e.size)),
+			humanize.Bytes(uint64(size)),
+			pct,
+			totalPct,
+			e.name)
+	}
+	fmt.Fprintf(t, "Total: %s\n", humanize.Bytes(uint64(totalSize)))
+	t.Flush()
+}
+
+type bucket struct {
+	name  string
+	size  int64
+	count int64
+}
+
 func runHistogram(cmd *cobra.Command, args []string) {
 	topN, err := cmd.Flags().GetInt("top")
+	if err != nil {
+		exitf("%v\n", err)
+	}
+	retained, err := cmd.Flags().GetBool("retained")
 	if err != nil {
 		exitf("%v\n", err)
 	}
@@ -459,40 +520,26 @@ func runHistogram(cmd *cobra.Command, args []string) {
 	if err != nil {
 		exitf("%v\n", err)
 	}
+
 	// Produce an object histogram (bytes per type).
-	type bucket struct {
-		name  string
-		size  int64
-		count int64
+	h := typeHistogram{
+		c: c,
+		m: make(map[string]*bucket),
 	}
-	var buckets []*bucket
-	m := map[string]*bucket{}
+	var i int
 	c.ForEachObject(func(x gocore.Object) bool {
-		name := typeName(c, x)
-		b := m[name]
-		if b == nil {
-			b = &bucket{name: name, size: c.Size(x)}
-			buckets = append(buckets, b)
-			m[name] = b
+		var size int64
+		if retained {
+			size = c.RetainedSize(i)
+		} else {
+			size = c.Size(x)
 		}
-		b.count++
+		h.add(x, size)
+		i++
 		return true
 	})
-	sort.Slice(buckets, func(i, j int) bool {
-		return buckets[i].size*buckets[i].count > buckets[j].size*buckets[j].count
-	})
-
-	// report only top N if requested
-	if topN > 0 && len(buckets) > topN {
-		buckets = buckets[:topN]
-	}
-
-	t := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', tabwriter.AlignRight)
-	fmt.Fprintf(t, "%s\t%s\t%s\t %s\n", "count", "size", "bytes", "type")
-	for _, e := range buckets {
-		fmt.Fprintf(t, "%d\t%d\t%d\t %s\n", e.count, e.size, e.count*e.size, e.name)
-	}
-	t.Flush()
+	h.sort()
+	h.report(topN, os.Stdout)
 }
 
 func runBreakdown(cmd *cobra.Command, args []string) {
@@ -515,7 +562,8 @@ func runBreakdown(cmd *cobra.Command, args []string) {
 		case "released":
 			comment = "(given back to the OS)"
 		}
-		fmt.Fprintf(t, "%s\t%d\t%6.2f%%\t %s\n", fmt.Sprintf("%-20s", indent+s.Name), s.Size, float64(s.Size)*100/float64(all), comment)
+		fmt.Fprintf(t, "%s\t%s\t%6.2f%%\t %s\n", fmt.Sprintf("%-20s", indent+s.Name), humanize.Bytes(uint64(s.Size)),
+			float64(s.Size)*100/float64(all), comment)
 		for _, c := range s.Children {
 			printStat(c, indent+"  ")
 		}
@@ -611,12 +659,14 @@ func runReachable(cmd *cobra.Command, args []string) {
 	}
 	n, err := strconv.ParseInt(args[0], 16, 64)
 	if err != nil {
-		exitf("can't parse %q as an object address\n", args[1])
+		fmt.Printf("can't parse %q as an object address\n", args[0])
+		return
 	}
 	a := core.Address(n)
 	obj, _ := c.FindObject(a)
 	if obj == 0 {
-		exitf("can't find object at address %s\n", args[1])
+		fmt.Printf("can't find object at address %s\n", args[0])
+		return
 	}
 
 	// Breadth-first search backwards until we reach a root.
