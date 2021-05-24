@@ -533,6 +533,10 @@ func (p *Process) typeObject(a core.Address, t *Type, r reader, add func(core.Ad
 		// TODO(jordan): What is up with this?
 		return
 	}
+	if strings.HasPrefix(t.Name, "github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanlatch") {
+		// TODO(jordan): What is up with this?
+		return
+	}
 	ptrSize := p.proc.PtrSize()
 
 	switch t.Kind {
