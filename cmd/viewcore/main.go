@@ -171,6 +171,7 @@ func init() {
 	cmdHTML.Flags().IntP("port", "p", 8080, "port for http server")
 
 	cmdHistogram.Flags().Int("top", 0, "reports only top N entries if N>0")
+	cmdHistogram.Flags().Bool("retained", false, "reports retained size rather than flat size")
 
 	cmdRoot.AddCommand(
 		cmdOverview,

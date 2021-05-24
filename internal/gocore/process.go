@@ -71,6 +71,9 @@ type Process struct {
 	// Sorted list of all roots.
 	// Only initialized if FlagReverse is passed to Core.
 	rootIdx []*Root
+
+	initDominators sync.Once
+	dominators     *dominators
 }
 
 // Process returns the core.Process used to construct this Process.

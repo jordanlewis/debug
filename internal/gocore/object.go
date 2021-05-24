@@ -236,6 +236,14 @@ func (p *Process) Size(x Object) int64 {
 	return p.findHeapInfo(core.Address(x)).size
 }
 
+// RetainedSize returns the retained size of x in bytes.
+func (p *Process) RetainedSize(objectIdx int) int64 {
+	p.calculateDominators()
+	// To translate object index to vertex number, add 1 for the pseudo-root
+	// and n for the roots.
+	return p.dominators.size[p.dominators.vertices[1+len(p.rootIdx)+objectIdx]]
+}
+
 // Type returns the type and repeat count for the object x.
 // x contains at least repeat copies of the returned type.
 func (p *Process) Type(x Object) (*Type, int64) {

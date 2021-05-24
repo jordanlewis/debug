@@ -63,6 +63,9 @@ type dominators struct {
 	// mapping from object ID to object
 	objs []Object
 
+	// number -> name
+	vertices []vName
+
 	// name -> dominator name
 	idom []vName
 
@@ -75,14 +78,16 @@ type dominators struct {
 }
 
 func (p *Process) calculateDominators() *dominators {
-	lt := runLT(p)
-	d := dominators{p: p, idom: lt.idom, objs: lt.objs}
-	lt = ltDom{}
+	p.initDominators.Do(func() {
+		lt := runLT(p)
+		d := dominators{p: p, idom: lt.idom, objs: lt.objs, vertices: lt.vertices}
+		lt = ltDom{}
 
-	d.reverse()
-	d.calcSize(p)
-
-	return &d
+		d.reverse()
+		d.calcSize(p)
+		p.dominators = &d
+	})
+	return p.dominators
 }
 
 func runLT(p *Process) ltDom {
