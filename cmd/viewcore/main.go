@@ -27,6 +27,7 @@ import (
 
 	"github.com/chzyer/readline"
 	"github.com/dustin/go-humanize"
+	"github.com/google/pprof/profile"
 	"github.com/spf13/cobra"
 	"golang.org/x/debug/internal/core"
 	"golang.org/x/debug/internal/gocore"
@@ -119,6 +120,20 @@ var (
 		Run:   runObjgraph,
 	}
 
+	cmdTypegraph = &cobra.Command{
+		Use:   "typegraph <output_filename>",
+		Short: "dump object graph grouped by type (dot)",
+		Args:  cobra.ExactArgs(1),
+		Run:   runTypegraph,
+	}
+
+	cmdPprof = &cobra.Command{
+		Use:   "pprof <output_filename>",
+		Short: "dump object graph to pprof format",
+		Args:  cobra.ExactArgs(1),
+		Run:   runPprof,
+	}
+
 	cmdReachable = &cobra.Command{
 		Use:   "reachable <address>",
 		Short: "find path from root to an object",
@@ -181,6 +196,8 @@ func init() {
 		cmdBreakdown,
 		cmdObjects,
 		cmdObjgraph,
+		cmdTypegraph,
+		cmdPprof,
 		cmdReachable,
 		cmdHTML,
 		cmdRead,
@@ -471,7 +488,7 @@ func (h *typeHistogram) add(x gocore.Object, size int64) {
 	name := typeName(h.c, x)
 	b := h.m[name]
 	if b == nil {
-		b = &bucket{name: name, size: size}
+		b = &bucket{name: name, size: size, i: len(h.buckets)}
 		h.buckets = append(h.buckets, b)
 		h.m[name] = b
 	}
@@ -515,6 +532,7 @@ type bucket struct {
 	name  string
 	size  int64
 	count int64
+	i     int
 }
 
 func runHistogram(cmd *cobra.Command, args []string) {
@@ -648,6 +666,189 @@ func runObjgraph(cmd *cobra.Command, args []string) {
 	fmt.Fprintf(w, "}")
 	w.Close()
 	fmt.Fprintf(os.Stderr, "wrote the object graph to %q\n", fname)
+}
+
+func runTypegraph(cmd *cobra.Command, args []string) {
+	_, c, err := readCore()
+	if err != nil {
+		exitf("%v\n", err)
+	}
+
+	fname := args[0]
+
+	// Dump object graph to output file.
+	w, err := os.Create(fname)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Fprintf(w, "digraph {\n")
+
+	type edge struct {
+		count int
+	}
+	type blerp struct {
+		e map[string]*edge
+	}
+	h := typeHistogram{c: c, m: make(map[string]*bucket)}
+	c.ForEachObject(func(x gocore.Object) bool {
+		h.add(x, c.Size(x))
+		return true
+	})
+	m := make(map[string]*blerp)
+	c.ForEachObject(func(x gocore.Object) bool {
+		name := typeName(c, x)
+		b := m[name]
+		if b == nil {
+			b = &blerp{e: make(map[string]*edge)}
+			m[name] = b
+		}
+		c.ForEachReversePtr(x, func(y gocore.Object, r *gocore.Root, _, _ int64) bool {
+			if r == nil {
+				name = typeName(c, y)
+				if b.e[name] == nil {
+					b.e[name] = &edge{}
+				}
+				b.e[name].count++
+			}
+			return true
+		})
+		return true
+	})
+
+	for i, b := range h.buckets {
+		fmt.Fprintf(w, "t%d [label=\"%s\n%d (%s)\"]\n", i, b.name, b.count, humanize.Bytes(uint64(b.size)))
+		for otherName, e := range m[b.name].e {
+			fmt.Fprintf(w, "t%d -> t%d [label=\"%d\"]\n", h.m[otherName].i, i, e.count)
+		}
+	}
+	fmt.Fprintf(w, "}")
+	w.Close()
+	fmt.Fprintf(os.Stderr, "wrote the object graph to %q\n", fname)
+}
+
+func runPprof(cmd *cobra.Command, args []string) {
+	_, c, err := readCore()
+	if err != nil {
+		exitf("%v\n", err)
+	}
+	fname := args[0]
+
+	type edge struct {
+		count int
+	}
+	type blerp struct {
+		e map[string]*edge
+	}
+	h := typeHistogram{c: c, m: make(map[string]*bucket)}
+	c.ForEachObject(func(x gocore.Object) bool {
+		h.add(x, c.Size(x))
+		return true
+	})
+	//m := make(map[string]*blerp)
+
+	p := profile.Profile{
+		SampleType: []*profile.ValueType{
+			{Type: "inuse_space", Unit: "bytes"},
+			{Type: "inuse_objects", Unit: "count"},
+		},
+		DefaultSampleType: "inuse_space",
+
+		Location: make([]*profile.Location, len(h.buckets)),
+		Sample:   make([]*profile.Sample, 0, len(h.buckets)),
+		Function: make([]*profile.Function, len(h.buckets)),
+	}
+	typeToIdx := make(map[string]int)
+	for i, b := range h.buckets {
+		typeToIdx[b.name] = i
+		p.Function[i] = &profile.Function{
+			ID:         uint64(i + 1),
+			Name:       b.name,
+			SystemName: b.name,
+			Filename:   "derp",
+		}
+		p.Location[i] = &profile.Location{
+			ID: uint64(i + 1),
+			Line: []profile.Line{
+				{
+					Line:     1,
+					Function: p.Function[i],
+				},
+			},
+		}
+	}
+
+	var f func(path []*profile.Location, x gocore.Object)
+	f = func(path []*profile.Location, x gocore.Object) {
+		name := typeName(c, x)
+		idx, ok := typeToIdx[name]
+		if !ok {
+			panic("hm")
+		}
+		sz := c.Size(x)
+		path2 := append(path, p.Location[idx])
+		location := append([]*profile.Location{}, path2...)
+		for i, j := 0, len(location)-1; i < j; i, j = i+1, j-1 {
+			location[i], location[j] = location[j], location[i]
+		}
+		p.Sample = append(p.Sample, &profile.Sample{
+			Location: location,
+			Value:    []int64{sz, 1},
+		})
+		if c.Pmark(core.Address(x)) {
+			p.Sample[len(p.Sample)-1].Value[0] = 100
+			p.Sample[len(p.Sample)-1].Value[1] = 1
+			return
+		}
+		c.ForEachPtr(x, func(_ int64, y gocore.Object, _ int64) bool {
+			f(path2, y)
+			return true
+		})
+	}
+
+	skippedNames := []string{"runtime", "unicode", "reflect.", "io", "sync.", "syscall.", "strconv.", "time.",
+		"internal/", "os.", "_cgo", "fmt", "math.", "path.", "errors."}
+	c.ForEachRoot(func(r *gocore.Root) bool {
+		for _, n := range skippedNames {
+			if strings.HasPrefix(r.Name, n) {
+				return true
+			}
+		}
+		t := r.Type.String()
+		idx, ok := typeToIdx[t]
+		if !ok {
+			idx = len(p.Location)
+			typeToIdx[t] = idx
+			p.Function = append(p.Function, &profile.Function{
+				ID:         uint64(idx + 1),
+				Name:       t,
+				SystemName: t,
+				Filename:   "derp",
+			})
+			p.Location = append(p.Location, &profile.Location{
+				ID: uint64(idx + 1),
+				Line: []profile.Line{
+					{
+						Line:     1,
+						Function: p.Function[idx],
+					},
+				},
+			})
+		}
+		path := []*profile.Location{p.Location[idx]}
+		c.ForEachRootPtr(r, func(a int64, x gocore.Object, b int64) bool {
+			f(path, x)
+			return true
+		})
+		return true
+	})
+
+	fmt.Println(p.CheckValid())
+	w, err := os.Create(fname)
+	if err != nil {
+		panic(err)
+	}
+	p.Write(w)
+	w.Close()
 }
 
 func runObjects(cmd *cobra.Command, args []string) {

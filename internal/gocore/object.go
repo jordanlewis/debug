@@ -15,6 +15,25 @@ import (
 // Unreachable (garbage) objects are not represented as Objects.
 type Object core.Address
 
+func (p *Process) Pmark(x core.Address) bool {
+	h := p.findHeapInfo(x)
+	if h == nil { // not in heap or not in a valid span
+		// Invalid spans can happen with intra-stack pointers.
+		return false
+	}
+	// Round down to object start.
+	x = h.base.Add(x.Sub(h.base) / h.size * h.size)
+	// Object start may map to a different info. Reload heap info.
+	h = p.findHeapInfo(x)
+	// Find mark bit
+	b := uint64(x) % heapInfoSize / 8
+	if h.pmark&(uint64(1)<<b) != 0 { // already found
+		return true
+	}
+	h.pmark |= uint64(1) << b
+	return false
+}
+
 // markObjects finds all the live objects in the heap and marks them
 // in the p.heapInfo mark fields.
 func (p *Process) markObjects() {
@@ -339,6 +358,7 @@ type heapInfo struct {
 	base     core.Address // start of the span containing this heap region
 	size     int64        // size of objects in the span
 	mark     uint64       // 64 mark bits, one for every 8 bytes
+	pmark    uint64       // 64 mark bits, one for every 8 bytes
 	firstIdx int          // the index of the first object that starts in this region, or -1 if none
 	// For 64-bit inferiors, ptr[0] contains 64 pointer bits, one
 	// for every 8 bytes.  On 32-bit inferiors, ptr contains 128
