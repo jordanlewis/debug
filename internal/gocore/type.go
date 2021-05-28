@@ -481,7 +481,14 @@ func (p *Process) typeHeap() {
 			t := p.types[i].t
 			r := p.types[i].r
 			if t == nil {
-				continue // We have no type info at offset 0.
+				// Sometimes, we might see an interior pointer to an object that
+				// we'll never see a 0-offset pointer to. In this case, we should
+				// optimistically type the outer object.
+				t = chunks[0].t
+				r = chunks[0].r
+				p.types[i].t = t
+				p.types[i].r = r
+				//continue // We have no type info at offset 0.
 			}
 			for _, c := range chunks {
 				if c.max() <= r*t.Size {
@@ -489,6 +496,9 @@ func (p *Process) typeHeap() {
 					continue
 				}
 				if c.min() <= r*t.Size {
+					// [ slice ...]
+					//         [slice of same type that's an interior pointer...]
+					// [ giant slice is the result                              ]
 					// Typings overlap or abut. Extend if we can.
 					if c.t == t && c.min()%t.Size == 0 {
 						r = c.max() / t.Size

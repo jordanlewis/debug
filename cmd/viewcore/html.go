@@ -361,7 +361,10 @@ func htmlPointer(c *gocore.Process, a core.Address) string {
 		return s
 	}
 	t, r := c.Type(x)
-	if t == nil || i >= r*t.Size {
+	if t == nil {
+		return fmt.Sprintf("%s?+%d", s, i)
+	}
+	if i >= r*t.Size {
 		return fmt.Sprintf("%s+%d", s, i)
 	}
 	idx := ""
