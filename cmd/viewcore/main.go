@@ -834,7 +834,14 @@ func runPprof(cmd *cobra.Command, args []string) {
 				},
 			})
 		}
+		// For every root, we emit a 1-"frame" sample to the profile so that
+		// we can make sure to see the size of all of the roots as well as
+		// their children.
 		path := []*profile.Location{p.Location[idx]}
+		p.Sample = append(p.Sample, &profile.Sample{
+			Location: path,
+			Value:    []int64{r.Type.Size, 1},
+		})
 		c.ForEachRootPtr(r, func(a int64, x gocore.Object, b int64) bool {
 			f(path, x)
 			return true
