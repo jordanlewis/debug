@@ -61,6 +61,9 @@ type Process struct {
 	initTypeHeap sync.Once
 	types        []typeInfo
 
+	dedupeTypeOnce sync.Once
+	dedupedTypes   []string
+
 	// Reverse edges.
 	// The reverse edges for object #i are redge[ridx[i]:ridx[i+1]].
 	// A "reverse edge" for object #i is a location in memory where a pointer
@@ -83,6 +86,12 @@ func (p *Process) Process() *core.Process {
 
 func (p *Process) Goroutines() []*Goroutine {
 	return p.goroutines
+}
+
+func (p *Process) Types() []string {
+	p.typeHeap()
+	p.dedupeTypes()
+	return p.dedupedTypes
 }
 
 // Stats returns a breakdown of the program's memory use by category.
@@ -609,7 +618,7 @@ func (p *Process) readG(r region) *Goroutine {
 		return g
 	}
 	for {
-		f, err := p.readFrame(sp, pc)
+		f, err := p.readFrame(g, sp, pc)
 		if err != nil {
 			fmt.Printf("warning: giving up on backtrace: %v\n", err)
 			break
@@ -650,7 +659,7 @@ func (p *Process) readG(r region) *Goroutine {
 	return g
 }
 
-func (p *Process) readFrame(sp, pc core.Address) (*Frame, error) {
+func (p *Process) readFrame(g *Goroutine, sp, pc core.Address) (*Frame, error) {
 	f := p.funcTab.find(pc)
 	if f == nil {
 		return nil, fmt.Errorf("cannot find func for pc=%#x", pc)
@@ -662,7 +671,7 @@ func (p *Process) readFrame(sp, pc core.Address) (*Frame, error) {
 	}
 	size += p.proc.PtrSize() // TODO: on amd64, the pushed return address
 
-	frame := &Frame{f: f, pc: pc, min: sp, max: sp.Add(size)}
+	frame := &Frame{g: g, f: f, pc: pc, min: sp, max: sp.Add(size)}
 
 	// Find live ptrs in locals
 	live := map[core.Address]bool{}
@@ -714,6 +723,21 @@ func (p *Process) readFrame(sp, pc core.Address) (*Frame, error) {
 	frame.Live = live
 
 	return frame, nil
+}
+
+func (p *Process) dedupeTypes() {
+	p.dedupeTypeOnce.Do(func() {
+		dedupedTypes := make(map[string]bool)
+		p.ForEachObject(func(x Object) bool {
+			name := TypeName(p, x)
+			dedupedTypes[name] = true
+			return true
+		})
+		p.dedupedTypes = make([]string, len(dedupedTypes))
+		for t := range dedupedTypes {
+			p.dedupedTypes = append(p.dedupedTypes, t)
+		}
+	})
 }
 
 // A Stats struct is the node of a tree representing the entire memory

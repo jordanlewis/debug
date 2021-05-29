@@ -38,6 +38,7 @@ func (g *Goroutine) Frames() []*Frame {
 // (Note that in the presence of inlining, a Frame may contain local variables
 // for more than one Go function invocation.)
 type Frame struct {
+	g        *Goroutine
 	parent   *Frame
 	f        *Func        // function whose activation record this frame is
 	pc       core.Address // resumption point
@@ -51,6 +52,10 @@ type Frame struct {
 	roots []*Root // GC roots in this frame
 
 	// TODO: keep vars from dwarf around?
+}
+
+func (f *Frame) Goroutine() *Goroutine {
+	return f.g
 }
 
 // Func returns the function for which this frame is an activation record.

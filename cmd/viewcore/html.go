@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/dustin/go-humanize"
 	"golang.org/x/debug/internal/core"
 	"golang.org/x/debug/internal/gocore"
 )
@@ -46,7 +47,7 @@ func serveHTML(c *gocore.Process, port int, async bool) {
 
 		tableStyle(w)
 		fmt.Fprintf(w, "<h1>object %x</h1>\n", a)
-		fmt.Fprintf(w, "<h3>%s</h3>\n", html.EscapeString(typeName(c, x)))
+		fmt.Fprintf(w, "<h3>%s</h3>\n", html.EscapeString(gocore.TypeName(c, x)))
 		fmt.Fprintf(w, "<h3>%d bytes</h3>\n", size)
 
 		if typ != nil && repeat == 1 && typ.String() == "runtime.g" {
@@ -64,40 +65,48 @@ func serveHTML(c *gocore.Process, port int, async bool) {
 
 		fmt.Fprintf(w, "<table>\n")
 		fmt.Fprintf(w, "<tr><th align=left>field</th><th align=left colspan=\"2\">type</th><th align=left>value</th></tr>\n")
-		var end int64
+		//var end int64
 		if typ != nil {
 			n := size / typ.Size
 			if n > 1 {
+				if n > 128 {
+					n = 128
+				}
 				for i := int64(0); i < n; i++ {
 					htmlObject(w, c, fmt.Sprintf("[%d]", i), addr.Add(i*typ.Size), typ, nil)
+				}
+				if n < size/typ.Size {
+					fmt.Fprintf(w, "<tr><td>...</td><td>...</td><td>...</td></tr>\n")
 				}
 			} else {
 				htmlObject(w, c, "", addr, typ, nil)
 			}
-			end = n * typ.Size
+			//	end = n * typ.Size
 		}
-		for i := end; i < size; i += c.Process().PtrSize() {
-			fmt.Fprintf(w, "<tr><td>f%d</td><td colspan=\"2\">?</td>", i)
-			if c.IsPtr(addr.Add(i)) {
-				fmt.Fprintf(w, "<td>%s</td>", htmlPointer(c, c.Process().ReadPtr(addr.Add(i))))
-			} else {
-				fmt.Fprintf(w, "<td><pre>")
-				for j := int64(0); j < c.Process().PtrSize(); j++ {
-					fmt.Fprintf(w, "%02x ", c.Process().ReadUint8(addr.Add(i+j)))
-				}
-				fmt.Fprintf(w, "</pre></td><td><pre>")
-				for j := int64(0); j < c.Process().PtrSize(); j++ {
-					r := c.Process().ReadUint8(addr.Add(i + j))
-					if r >= 32 && r <= 126 {
-						fmt.Fprintf(w, "%s", html.EscapeString(string(rune(r))))
-					} else {
-						fmt.Fprintf(w, ".")
+		/*
+			for i := end; i < size; i += c.Process().PtrSize() {
+				fmt.Fprintf(w, "<tr><td>f%d</td><td colspan=\"2\">?</td>", i)
+				if c.IsPtr(addr.Add(i)) {
+					fmt.Fprintf(w, "<td>%s</td>", htmlPointer(c, c.Process().ReadPtr(addr.Add(i))))
+				} else {
+					fmt.Fprintf(w, "<td><pre>")
+					for j := int64(0); j < c.Process().PtrSize(); j++ {
+						fmt.Fprintf(w, "%02x ", c.Process().ReadUint8(addr.Add(i+j)))
 					}
+					fmt.Fprintf(w, "</pre></td><td><pre>")
+					for j := int64(0); j < c.Process().PtrSize(); j++ {
+						r := c.Process().ReadUint8(addr.Add(i + j))
+						if r >= 32 && r <= 126 {
+							fmt.Fprintf(w, "%s", html.EscapeString(string(rune(r))))
+						} else {
+							fmt.Fprintf(w, ".")
+						}
+					}
+					fmt.Fprintf(w, "</pre></td>")
 				}
-				fmt.Fprintf(w, "</pre></td>")
+				fmt.Fprintf(w, "</tr>\n")
 			}
-			fmt.Fprintf(w, "</tr>\n")
-		}
+		*/
 		fmt.Fprintf(w, "</table>\n")
 		fmt.Fprintf(w, "<h3>references to this object</h3>\n")
 		nrev := 0
@@ -107,7 +116,12 @@ func serveHTML(c *gocore.Process, port int, async bool) {
 				return false
 			}
 			if r != nil {
-				fmt.Fprintf(w, "%s%s", r.Name, typeFieldName(r.Type, i))
+				info := ""
+				if r.Frame != nil {
+					g := r.Frame.Goroutine()
+					info = fmt.Sprintf("[<a href=\"goroutine?g=%x\">%x</a>] %s().", g.Addr(), g.Addr(), r.Frame.Func().Name())
+				}
+				fmt.Fprintf(w, "%s%s%s", info, r.Name, typeFieldName(r.Type, i))
 			} else {
 				t, r := c.Type(z)
 				if t == nil {
@@ -176,6 +190,49 @@ func serveHTML(c *gocore.Process, port int, async bool) {
 			fmt.Fprintf(w, "</table>\n")
 		}
 	})
+	http.HandleFunc("/types", func(w http.ResponseWriter, r *http.Request) {
+		types := c.Types()
+		fmt.Fprintf(w, "<h1>types (%d unique types)</h1>\n", len(types))
+		tableStyle(w)
+		fmt.Fprintf(w, "<table>\n")
+		fmt.Fprintf(w, "<tr><th align=left>type</th></tr>\n")
+		for _, t := range types {
+			if t != "" {
+				fmt.Fprintf(w, "<tr><td><a href=\"type?t=%s\">%s</a></td></tr>\n", t, t)
+			}
+		}
+		fmt.Fprintf(w, "</table>\n")
+	})
+	http.HandleFunc("/type", func(w http.ResponseWriter, r *http.Request) {
+		typs, ok := r.URL.Query()["t"]
+		if !ok || len(typs) != 1 {
+			fmt.Fprintf(w, "wrong or missing t= type specification")
+			return
+		}
+		typeName := typs[0]
+		var foundAddrs []core.Address
+		var typ *gocore.Type
+		c.ForEachObject(func(x gocore.Object) bool {
+			if gocore.TypeName(c, x) == typeName {
+				typ, _ = c.Type(x)
+				foundAddrs = append(foundAddrs, core.Address(x))
+			}
+			return true
+		})
+		var sz uint64
+		if typ != nil {
+			sz = uint64(typ.Size)
+		}
+		fmt.Fprintf(w, "<h1>type %s (%d instances * %s = %s)</h1>\n", typeName, len(foundAddrs),
+			humanize.Bytes(sz), humanize.Bytes(sz*uint64(len(foundAddrs))))
+		tableStyle(w)
+		fmt.Fprintf(w, "<table>\n")
+		fmt.Fprintf(w, "<tr><th align=left>object</th></tr>\n")
+		for _, x := range foundAddrs {
+			fmt.Fprintf(w, "<tr><td><a href=\"object?o=%x\">%x</a></td></tr>\n", x, x)
+		}
+		fmt.Fprintf(w, "</table>\n")
+	})
 	http.HandleFunc("/globals", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "<h1>globals</h1>\n")
 		tableStyle(w)
@@ -192,6 +249,7 @@ func serveHTML(c *gocore.Process, port int, async bool) {
 		fmt.Fprintf(w, "%s<br/>\n", c.BuildVersion())
 		fmt.Fprintf(w, "<a href=\"goroutines\">goroutines</a><br/>\n")
 		fmt.Fprintf(w, "<a href=\"globals\">globals</a><br/>\n")
+		fmt.Fprintf(w, "<a href=\"types\">types</a><br/>\n")
 		tableStyle(w)
 		fmt.Fprintf(w, "<table>\n")
 		fmt.Fprintf(w, "<tr><th align=left>category</th><th align=left>bytes</th><th align=left>percent</th></tr>\n")
@@ -326,14 +384,20 @@ func htmlObject(w http.ResponseWriter, c *gocore.Process, name string, a core.Ad
 		fmt.Fprintf(w, "</tr>\n")
 		fmt.Fprintf(w, "<tr><td>int</td><td>%d</td></tr>\n", n)
 	case gocore.KindSlice:
-		fmt.Fprintf(w, "<tr><td rowspan=\"3\">%s</td><td rowspan=\"3\">%s</td><td>*%s</td><td>%s</td></tr>\n", name, t, t.Elem, htmlPointerAt(c, a, live))
+		typeString := t.String()
+		if obj, _ := c.FindObject(a); obj != 0 {
+			typeName := gocore.TypeName(c, obj)
+			typeString = fmt.Sprintf("<a href=\"/type?t=%s\"%s</a>", typeName, typeName)
+		}
+		fmt.Fprintf(w, "<tr><td rowspan=\"3\">%s</td><td rowspan=\"3\">%s</td><td>*%s</td><td>%s</td></tr>\n",
+			name, typeString, t.Elem, htmlPointerAt(c, a, live))
 		fmt.Fprintf(w, "<tr><td>int</td><td>%d</td></tr>\n", c.Process().ReadInt(a.Add(c.Process().PtrSize())))
 		fmt.Fprintf(w, "<tr><td>int</td><td>%d</td></tr>\n", c.Process().ReadInt(a.Add(c.Process().PtrSize()*2)))
 	case gocore.KindArray:
 		s := t.Elem.Size
 		n := t.Count
-		if n*s > 16384 {
-			n = (16384 + s - 1) / s
+		if n*s > 128 {
+			n = (128 + s - 1) / s
 		}
 		for i := int64(0); i < n; i++ {
 			htmlObject(w, c, fmt.Sprintf("%s[%d]", name, i), a.Add(i*s), t.Elem, live)

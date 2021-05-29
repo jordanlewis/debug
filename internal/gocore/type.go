@@ -324,6 +324,25 @@ func (c typeChunk) String() string {
 	return fmt.Sprintf("%x[%d]%s", c.off, c.r, c.t)
 }
 
+// TypeName returns a string representing the type of this object.
+func TypeName(c *Process, x Object) string {
+	size := c.Size(x)
+	typ, repeat := c.Type(x)
+	if typ == nil {
+		return fmt.Sprintf("unk%d", size)
+	}
+	name := typ.String()
+	n := size / typ.Size
+	if n > 1 {
+		if repeat < n {
+			name = fmt.Sprintf("[%d+%d?]%s", repeat, n-repeat, name)
+		} else {
+			name = fmt.Sprintf("[%d]%s", repeat, name)
+		}
+	}
+	return name
+}
+
 // typeHeap tries to label all the heap objects with types.
 func (p *Process) typeHeap() {
 	p.initTypeHeap.Do(func() {
